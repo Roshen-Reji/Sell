@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Revenue Leaderboard - Cloud Live</title>
+    
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <style>
+        /* Shared Styles from previous version */
+        :root { --beamDegrees: 0deg; --beamColor: #fbbf24; }
+        @keyframes subtleShift { 0% { background-position: 0% 0%; } 50% { background-position: 20% 10%; } 100% { background-position: 0% 0%; } }
+        body { background: radial-gradient(circle at 20% 20%, #a32929 0%, #050505 100%); background-size: 150% 150%; background-attachment: fixed; animation: subtleShift 25s ease-in-out infinite; min-height: 100vh; margin: 0; font-family: 'Inter', sans-serif; transition: background 0.5s ease; }
+        .login-body-dark { background: #000 !important; animation: none; }
+        .glass-panel { background: rgba(255, 255, 255, 0.92); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.1); }
+        .input-wrapper { position: relative; width: 100%; }
+        #beam { position: absolute; top: 50%; right: 1.75rem; clip-path: polygon(100% 50%, 100% 50%, 0 0, 0 100%); width: 100vw; height: 40vw; z-index: 1; mix-blend-mode: screen; transition: transform 150ms ease-out; transform-origin: 100% 50%; transform: translateY(-50%) rotate(var(--beamDegrees, 0)); pointer-events: none; background: var(--beamColor); opacity: 0; }
+        .show-password #beam { opacity: 0.6; }
+        .show-password input#password { color: #fbbf24 !important; border: 2px dashed #fbbf24 !important; background: #1a1a1a !important; }
+        .eye-icon { width: 20px; height: 20px; border: 2px solid #6b7280; border-radius: 15px 0; transform: rotate(45deg); position: relative; }
+        .show-password .eye-icon { border-color: #fbbf24; }
+    </style>
+</head>
+<body class="transition-colors duration-300">
+    <div id="root"></div>
+
+    <script type="text/babel" data-type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-app.js";
+        import { getFirestore, collection, addDoc, onSnapshot, doc, updateDoc, query, orderBy, deleteDoc } from "https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore.js";
+
+        // --- PASTE YOUR FIREBASE CONFIG HERE ---
+        // It looks like: const firebaseConfig = { apiKey: "...", ... };
+       const firebaseConfig = {
+            apiKey: "AIzaSyCg5JDoP_lfNKxg6XzRu0J5xevBLsx1JIo",
+            authDomain: "sell-the-product.firebaseapp.com",
+            projectId: "sell-the-product",
+            storageBucket: "sell-the-product.firebasestorage.app",
+            messagingSenderId: "1085888316819",
+            appId: "1:1085888316819:web:324fa69a3a56a88b831466"
+            };
+
+        // Initialize Firebase
+        
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+
+        const { useState, useEffect, useMemo, useRef } = React;
+
+        // Hardcoded Users for Auth (simplification)
+        const INITIAL_USERS = [
+            { id: 1, username: 'admin', role: 'ADMIN', password: 'password' },
+            ...Array.from({ length: 20 }, (_, i) => ({
+                id: i + 2,
+                username: `Account_${String(i + 1).padStart(2, '0')}`,
+                role: 'USER',
+                password: 'password'
+            }))
+        ];
+
+        function App() {
+            const [user, setUser] = useState(null);
+            const [products, setProducts] = useState([]);
+            const [allocations, setAllocations] = useState([]);
+            const [loading, setLoading] = useState(true);
+
+            // 1. SYNC PRODUCTS (Real-time Listener)
+            useEffect(() => {
+                // Subscribe to 'products' collection
+                const q = query(collection(db, "products"));
+                const unsubscribe = onSnapshot(q, (snapshot) => {
+                    const params = snapshot.docs.map(doc => ({ ...doc.data(), docId: doc.id }));
+                    setProducts(params);
+                    setLoading(false);
+                });
+                return () => unsubscribe();
+            }, []);
+
+            // 2. SYNC ALLOCATIONS (Real-time Listener)
+            useEffect(() => {
+                // Subscribe to 'allocations' collection
+                const q = query(collection(db, "allocations"));
+                const unsubscribe = onSnapshot(q, (snapshot) => {
+                    const params = snapshot.docs.map(doc => ({ ...doc.data(), docId: doc.id }));
+                    setAllocations(params);
+                });
+                return () => unsubscribe();
+            }, []);
+
+            // Logic: Calculate Leaderboard
+            const leaderboard = useMemo(() => {
+                return INITIAL_USERS
+                    .filter(u => u.role === 'USER')
+                    .map(u => {
+                        const totalRevenue = allocations
+                            .filter(a => a.userId === u.id)
+                            .reduce((sum, item) => sum + (Number(item.revenue) || 0), 0);
+                        return { username: u.username, totalRevenue };
+                    })
+                    .sort((a, b) => b.totalRevenue - a.totalRevenue)
+                    .slice(0, 5);
+            }, [allocations]);
+
+            // Logic: Record Sale (Writes to Cloud)
+            const recordSale = async (allocationDocId, currentSold, currentRevenue, moneyGained, maxAllocated) => {
+                const amount = parseFloat(moneyGained);
+                if (isNaN(amount) || amount <= 0) return alert("Please enter a valid amount.");
+                if (currentSold >= maxAllocated) return alert("Out of stock!");
+
+                try {
+                    const allocRef = doc(db, "allocations", allocationDocId);
+                    await updateDoc(allocRef, {
+                        sold: currentSold + 1,
+                        revenue: currentRevenue + amount
+                    });
+                } catch (e) {
+                    console.error("Error recording sale: ", e);
+                    alert("Sync Error: Check internet connection");
+                }
+            };
+
+            const resetSystem = async () => {
+                if(!confirm("DANGER: This deletes all data from the Cloud. Continue?")) return;
+                // Deleting collections client-side is tedious, usually done via Admin SDK, 
+                // but we can loop through for this demo.
+                allocations.forEach(async (a) => await deleteDoc(doc(db, "allocations", a.docId)));
+                products.forEach(async (p) => await deleteDoc(doc(db, "products", p.docId)));
+            }
+
+            if (!user) return <LoginView onLogin={setUser} />;
+
+            return (
+                <div className="p-4 md:p-8 max-w-7xl mx-auto min-h-screen font-sans">
+                    <header className="flex flex-col md:flex-row justify-between items-center mb-8 glass-panel p-6 rounded-lg shadow-2xl gap-4">
+                        <div>
+                            <h1 className="text-2xl font-black text-gray-800 uppercase tracking-tight italic">₹ Revenue Tracker <span className="text-xs text-blue-600 bg-blue-100 px-2 py-1 rounded ml-2 not-italic">CLOUD CONNECTED</span></h1>
+                            <p className="text-sm text-gray-500 font-medium">Logged in as: <span className="text-red-700 font-bold">{user.username}</span></p>
+                        </div>
+                        <div className="flex gap-2">
+                             {user.role === 'ADMIN' && <button onClick={resetSystem} className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg font-bold text-xs uppercase tracking-widest transition">Wipe DB</button>}
+                            <button onClick={() => setUser(null)} className="bg-gray-200 hover:bg-gray-300 text-gray-700 px-6 py-2 rounded-lg font-bold transition">Logout</button>
+                        </div>
+                    </header>
+
+                    <div className="mb-8">
+                        <h2 className="text-lg font-bold mb-4 text-white uppercase tracking-widest drop-shadow-md">🏆 Live Leaderboard</h2>
+                        <div className="grid grid-cols-1 sm:grid-cols-5 gap-4">
+                            {leaderboard.map((player, idx) => (
+                                <div key={player.username} className={`p-4 rounded-xl shadow-lg border-b-4 glass-panel ${idx === 0 ? 'border-yellow-400' : 'border-red-500'}`}>
+                                    <div className="text-[10px] font-bold text-gray-400 uppercase">Rank {idx + 1}</div>
+                                    <div className="text-sm font-black text-gray-800 truncate">{player.username}</div>
+                                    <div className="text-xl font-black text-green-700">₹{player.totalRevenue.toLocaleString('en-IN')}</div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                        <main className="lg:col-span-2">
+                            {user.role === 'ADMIN' ? (
+                                <AdminPanel products={products} allocations={allocations} users={INITIAL_USERS} db={db} />
+                            ) : (
+                                <UserPanel user={user} products={products} allocations={allocations} recordSale={recordSale} />
+                            )}
+                        </main>
+                        <aside className="glass-panel p-6 rounded-lg shadow-2xl h-fit">
+                            <h3 className="font-bold text-gray-800 mb-4 border-b pb-2 text-xs uppercase tracking-tighter">Live Financial Feed</h3>
+                            <div className="space-y-3">
+                                {allocations.filter(a => a.sold > 0).length === 0 && <div className="text-xs text-gray-400">Waiting for live data...</div>}
+                                {allocations.filter(a => a.sold > 0).slice(-5).reverse().map((a, i) => (
+                                    <div key={i} className="text-xs flex justify-between bg-white/50 p-2 rounded items-center animate-pulse">
+                                        <div className="flex flex-col">
+                                            <span className="font-bold text-gray-700">{INITIAL_USERS.find(u => u.id === a.userId)?.username}</span>
+                                            <span className="text-[10px] text-gray-500">Sold Item (ID: {a.productId})</span>
+                                        </div>
+                                        <span className="text-green-600 font-black bg-green-100 px-2 py-1 rounded">+₹{ (Number(a.revenue) / a.sold).toFixed(0) }</span>
+                                    </div>
+                                ))}
+                            </div>
+                        </aside>
+                    </div>
+                </div>
+            );
+        }
+
+        // --- SUB COMPONENTS ---
+        
+        function LoginView({ onLogin }) {
+            const [showPassword, setShowPassword] = useState(false);
+            const [creds, setCreds] = useState({ username: '', password: '' });
+            const beamRef = useRef(null);
+
+            useEffect(() => {
+                const handleMouseMove = (e) => {
+                    if (!showPassword || !beamRef.current) return;
+                    const rect = beamRef.current.getBoundingClientRect();
+                    const degrees = (Math.atan2(rect.right - e.pageX, (rect.top + (rect.height / 2)) - e.pageY) * (20 / Math.PI) * -1) - 350;
+                    document.documentElement.style.setProperty('--beamDegrees', `${degrees}deg`);
+                };
+                window.addEventListener('mousemove', handleMouseMove);
+                if (showPassword) document.body.classList.add('login-body-dark');
+                else document.body.classList.remove('login-body-dark');
+                return () => { window.removeEventListener('mousemove', handleMouseMove); document.body.classList.remove('login-body-dark'); };
+            }, [showPassword]);
+
+            const handleSubmit = (e) => {
+                e.preventDefault();
+                const found = INITIAL_USERS.find(u => u.username === creds.username && u.password === creds.password);
+                if (found) onLogin(found);
+                else alert("Invalid credentials.");
+            };
+
+            return (
+                <div className={`flex items-center justify-center min-h-screen ${showPassword ? 'show-password' : ''}`}>
+                    <form onSubmit={handleSubmit} className={`p-10 rounded-2xl shadow-2xl w-full max-w-md z-10 transition-all ${showPassword ? 'bg-gray-900 border border-gray-800' : 'glass-panel'}`}>
+                        <h2 className={`text-3xl font-black mb-8 text-center ${showPassword ? 'text-yellow-400' : 'text-gray-800'}`}>CLOUD LOGIN</h2>
+                        <div className="mb-6"><label className={`block text-xs font-bold uppercase mb-2 ${showPassword ? 'text-gray-400' : 'text-gray-500'}`}>Username</label><input type="text" className={`w-full p-4 rounded-lg border-2 outline-none transition-all font-mono ${showPassword ? 'bg-gray-800 border-gray-700 text-white' : 'bg-gray-50/50 border-gray-200'}`} onChange={e => setCreds({...creds, username: e.target.value})} required /></div>
+                        <div className="mb-10"><label className={`block text-xs font-bold uppercase mb-2 ${showPassword ? 'text-gray-400' : 'text-gray-500'}`}>Password</label><div className="input-wrapper"><input id="password" type={showPassword ? "text" : "password"} className="w-full p-4 rounded-lg border-2 border-gray-200 bg-gray-50/50 outline-none focus:border-blue-500 transition-all font-mono z-20 relative" onChange={e => setCreds({...creds, password: e.target.value})} required /><button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-4 top-1/2 -translate-y-1/2 z-30 outline-none"><div className="eye-icon"></div></button><div id="beam" ref={beamRef}></div></div></div>
+                        <button className={`w-full py-4 rounded-lg font-black tracking-widest transition-colors shadow-lg ${showPassword ? 'bg-yellow-500 text-black hover:bg-yellow-400' : 'bg-blue-700 text-white hover:bg-blue-800'}`}>CONNECT</button>
+                    </form>
+                </div>
+            );
+        }
+
+        function AdminPanel({ products, allocations, users, db }) {
+            const [name, setName] = useState('');
+            const [qty, setQty] = useState(0);
+            const [tUserId, setTUserId] = useState('');
+            const [tProdDocId, setTProdDocId] = useState('');
+            const [tQty, setTQty] = useState(0);
+
+            const handleAdd = async () => {
+                if(!name || qty <= 0) return;
+                try {
+                    await addDoc(collection(db, "products"), { id: Date.now(), name, centralStock: parseInt(qty) });
+                    setName(''); setQty(0);
+                } catch(e) { alert("Error adding product: " + e.message); }
+            };
+
+            const handleTransfer = async () => {
+                const amount = parseInt(tQty);
+                const prod = products.find(p => p.docId === tProdDocId);
+                if (!prod || prod.centralStock < amount || !tUserId) return alert("Transfer failed.");
+
+                try {
+                    // 1. Update Central Stock
+                    const prodRef = doc(db, "products", prod.docId);
+                    await updateDoc(prodRef, { centralStock: prod.centralStock - amount });
+
+                    // 2. Update/Create User Allocation
+                    const existing = allocations.find(a => a.userId === parseInt(tUserId) && a.productId === prod.id);
+                    if (existing) {
+                        const allocRef = doc(db, "allocations", existing.docId);
+                        await updateDoc(allocRef, { allocated: existing.allocated + amount });
+                    } else {
+                        await addDoc(collection(db, "allocations"), { 
+                            userId: parseInt(tUserId), 
+                            productId: prod.id, 
+                            allocated: amount, 
+                            sold: 0, 
+                            revenue: 0 
+                        });
+                    }
+                    setTQty(0);
+                    alert("Transferred to Cloud!");
+                } catch(e) { alert("Error: " + e.message); }
+            };
+
+            return (
+                <div className="space-y-6">
+                    <div className="glass-panel p-6 rounded-lg shadow-xl border-l-4 border-black">
+                        <h3 className="font-bold mb-4 text-gray-700 text-lg">📦 Add Inventory (Cloud)</h3>
+                        <div className="flex gap-2 flex-col sm:flex-row">
+                            <input className="border p-3 rounded flex-grow bg-white/50" placeholder="Product Name" value={name} onChange={e => setName(e.target.value)} />
+                            <input className="border p-3 rounded w-full sm:w-24 bg-white/50" type="number" placeholder="Qty" value={qty} onChange={e => setQty(e.target.value)} />
+                            <button onClick={handleAdd} className="bg-black hover:bg-gray-800 text-white px-6 py-3 rounded font-bold transition">Add</button>
+                        </div>
+                    </div>
+                    <div className="glass-panel p-6 rounded-lg shadow-xl border-l-4 border-blue-700">
+                        <h3 className="font-bold mb-4 text-gray-700 text-lg">🚚 Allocate Stock (Cloud)</h3>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+                            <select className="border p-3 rounded bg-white/50" onChange={e => setTProdDocId(e.target.value)} value={tProdDocId}>
+                                <option value="">Select Product...</option>
+                                {products.map(p => <option key={p.docId} value={p.docId}>{p.name} (Stock: {p.centralStock})</option>)}
+                            </select>
+                            <select className="border p-3 rounded bg-white/50" onChange={e => setTUserId(e.target.value)} value={tUserId}>
+                                <option value="">Select User...</option>
+                                {users.filter(u => u.role === 'USER').map(u => <option key={u.id} value={u.id}>{u.username}</option>)}
+                            </select>
+                        </div>
+                        <input className="border p-3 rounded w-full mb-4 bg-white/50" type="number" placeholder="Quantity to Transfer" value={tQty} onChange={e => setTQty(e.target.value)} />
+                        <button onClick={handleTransfer} className="w-full bg-blue-700 text-white p-3 rounded font-bold shadow-md hover:bg-blue-800 transition uppercase tracking-widest">Transfer</button>
+                    </div>
+                </div>
+            );
+        }
+
+        function UserPanel({ user, products, allocations, recordSale }) {
+            const myStock = allocations.filter(a => a.userId === user.id);
+            const [vals, setVals] = useState({});
+            
+            return (
+                <div className="glass-panel p-6 rounded-lg shadow-xl">
+                    <h3 className="font-bold mb-6 text-gray-700 uppercase tracking-tighter italic border-b pb-2">⚡ Cloud Sales Command</h3>
+                    {myStock.length === 0 ? <p className="text-gray-400">No stock allocated in Cloud DB.</p> : (
+                        <div className="space-y-4">
+                            {myStock.map(a => {
+                                const p = products.find(prod => prod.id === a.productId);
+                                if (!p) return null;
+                                return (
+                                    <div key={a.docId} className="border p-4 rounded-xl flex flex-col sm:flex-row items-center justify-between bg-white/60 border-gray-200 gap-4 transition hover:shadow-md">
+                                        <div className="flex-grow text-center sm:text-left">
+                                            <div className="font-black text-gray-800 text-lg">{p.name}</div>
+                                            <div className="text-xs text-gray-500 mt-1">Remaining: <span className="font-bold text-black bg-gray-200 px-2 rounded">{a.allocated - a.sold}</span> | Revenue: <span className="text-green-600 font-bold">₹{a.revenue}</span></div>
+                                        </div>
+                                        <div className="flex gap-2">
+                                            <input type="number" className="border p-2 rounded text-sm w-full sm:w-24 outline-none" placeholder="Price" value={vals[a.docId] || ''} onChange={e => setVals({...vals, [a.docId]: e.target.value})} />
+                                            <button onClick={() => { recordSale(a.docId, a.sold, a.revenue, vals[a.docId], a.allocated); setVals({...vals, [a.docId]: ''}); }} className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg font-bold shadow-sm whitespace-nowrap">Sell</button>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
